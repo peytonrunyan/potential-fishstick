@@ -41,14 +41,32 @@ communications: ["communication_id_1", "communication_id_2"]
 
 ### Architecture
 Scheduled Lambda -> DynamoDB -> SQS -> Lambda
-This could also just be a temporal workflow.
+This could also just be a temporal workflow. No need to reinvent the wheel here.
 
 ### Application
 Query the pending alert table for unsent alerts every interval (e.g. every 30 seconds) filtered by timestamp older than (now - batch window). Send them to the alerts SQS queue for whatever downstream system handles it (could also be a post endpoint or something else. I have no clue how yall currently implement frontend alerts). 
 
 Once it has been sent, delete the entry from the pending alert table, and then update the current_state in the user_alerts table with the latest_state from the pending alert.
 
-### Why State Updates Are Deferred (Intentional Design)
+### Batching Behavior (Current Implementation)
+
+The current implementation batches **by alert_id**, meaning all communications that trigger the same alert accumulate into a single pending alert entry regardless of communication type. A single constant batch window (60 seconds) is used for all alerts.
+
+```
+BATCH_WINDOW_SECONDS = 300
+```
+
+### Alternative: Batching by Data Type
+
+Another option is to batch alerts **per communication type** instead of per alert. This would mean:
+
+- Key pending alerts by `(alert_id, communication_type)` instead of just `alert_id`
+- Each data type gets its own batch window (e.g., calls = 30s, emails = 5min, chat = immediate)
+- A user could receive separate notifications for calls vs emails that triggered the same alert
+
+I think this is potentially too noisy, but it's an option.
+
+### Why State Updates Are Deferred 
 
 The worker intentionally does NOT update `current_state` in `user_alerts` when an alert triggers. State only updates after the batch window closes and the alert is actually sent. 
 
@@ -75,5 +93,7 @@ There's a race condition in here between concurrent workers processing the same 
 
 In dynamodb you can get around this with a conditional update and a version field, and force a retry, including pulling the latest state if the update fails. This is probably how I'd handle it if you were using dynamodb. I don't recall what your preferred db is though.
 
-## Duplicated Models
-The `AlertDefinition`, `StateFieldSchema`, and `ProcessingResult` models are duplicated between `new_alert_service/models.py` and `transcript_worker/models.py`. For the TypeScript conversion, these should be consolidated into a shared types package.
+## Intermediate State
+I imagine yall have way more context on what appropriate here than I do. Right now it's designed such that "latest state wins" if you get multiple communications that trigger an alert within a batch window. This means that you might lose intermediate state that is relevant. 
+
+There are probably ergonomic ways to handle this, such as tracking all of the state updates and then actually including them as part of the alert.

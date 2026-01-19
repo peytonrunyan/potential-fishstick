@@ -15,20 +15,15 @@ SENT_ALERTS_TABLE = os.environ.get("SENT_ALERTS_TABLE", "sent_alerts")
 USER_ALERTS_TABLE = os.environ.get("USER_ALERTS_TABLE", "user_alerts")
 ALERTS_QUEUE_URL = os.environ.get("ALERTS_QUEUE_URL", "")
 
-BATCH_WINDOWS = {
-    "call": 30,
-    "email": 300,
-    "chat": 0,
-    "default": 60,
-}
+BATCH_WINDOW_SECONDS = 300
 
 dynamodb = boto3.client("dynamodb")
 sqs = boto3.client("sqs")
 
 
-def get_batch_window(communication_type: str) -> int:
-    """Get the batch window in seconds for a communication type."""
-    return BATCH_WINDOWS.get(communication_type, BATCH_WINDOWS["default"])
+def get_batch_window() -> int:
+    """Get the batch window in seconds."""
+    return BATCH_WINDOW_SECONDS
 
 
 def query_ready_alerts_for_shard(shard: str, now: datetime) -> list[dict]:
@@ -36,8 +31,7 @@ def query_ready_alerts_for_shard(shard: str, now: datetime) -> list[dict]:
     Query pending alerts for a shard that are ready to be sent.
     Returns items where first_seen_at + batch_window < now.
     """
-    min_threshold = min(BATCH_WINDOWS.values())
-    cutoff = (now - timedelta(seconds=min_threshold)).isoformat()
+    cutoff = (now - timedelta(seconds=BATCH_WINDOW_SECONDS)).isoformat()
     
     response = dynamodb.query(
         TableName=PENDING_ALERTS_TABLE,
@@ -65,15 +59,6 @@ def query_ready_alerts_for_shard(shard: str, now: datetime) -> list[dict]:
         items.extend(response.get("Items", []))
     
     return items
-
-
-def is_ready_to_send(item: dict, now: datetime) -> bool:
-    """Check if an item has exceeded its batch window."""
-    first_seen_at = datetime.fromisoformat(item["first_seen_at"]["S"])
-    communication_type = item.get("communication_type", {}).get("S", "default")
-    window = get_batch_window(communication_type)
-    
-    return (now - first_seen_at).total_seconds() >= window
 
 
 def send_alert(item: dict) -> None:
@@ -166,9 +151,6 @@ def handler(event, context):
             logger.info(f"Shard {shard}: found {len(items)} candidate items")
             
             for item in items:
-                if not is_ready_to_send(item, now):
-                    continue
-                    
                 alert_id = item["alert_id"]["S"]
                 try:
                     send_alert(item)
