@@ -139,19 +139,15 @@ A serverless system for creating and processing custom, AI-powered alerts on com
 
 1. **Triggered by EventBridge** — Runs on a 1-minute schedule
 2. **Query Pending Alerts** — Reads from `pending_alerts` table using sharded GSI (5 shards) for efficient batch reads
-3. **Apply Batch Windows** — Checks if each alert has exceeded its communication-type-specific batch window before sending
+3. **Apply Batch Window** — Only processes alerts where `first_seen_at + BATCH_WINDOW_SECONDS < now`
 4. **Send to Alerts Queue** — Publishes ready alerts to `alerts` SQS queue for downstream delivery
 5. **Record Sent Alerts** — Writes to `sent_alerts` table with timestamp for audit trail
-6. **Cleanup** — Deletes processed items from `pending_alerts`
+6. **Update State** — Updates `current_state` in `user_alerts` table with the `latest_state` from the pending alert
+7. **Cleanup** — Deletes processed items from `pending_alerts`
 
-**Batch Windows by Communication Type:**
+**Batch Window:**
 
-| Type | Window | Behavior |
-|------|--------|----------|
-| `call` | 30 seconds | Quick batching for real-time calls |
-| `email` | 5 minutes | Longer window to batch email threads |
-| `chat` | 0 seconds | Immediate delivery |
-| `default` | 60 seconds | Fallback for unknown types |
+A single constant batch window (`BATCH_WINDOW_SECONDS = 300`, i.e., 5 minutes) is used for all alerts regardless of communication type. This ensures multiple triggers within the window are consolidated into a single notification.
 
 **Environment Variables:**
 - `PENDING_ALERTS_TABLE` — Source table for triggered alerts
