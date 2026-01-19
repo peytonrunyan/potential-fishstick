@@ -48,6 +48,24 @@ Query the pending alert table for unsent alerts every interval (e.g. every 30 se
 
 Once it has been sent, delete the entry from the pending alert table, and then update the current_state in the user_alerts table with the latest_state from the pending alert.
 
+### Why State Updates Are Deferred (Intentional Design)
+
+The worker intentionally does NOT update `current_state` in `user_alerts` when an alert triggers. State only updates after the batch window closes and the alert is actually sent. 
+
+**Why this matters:** During a batch window, multiple communications may trigger the same alert. By keeping the state frozen until the batch sends:
+
+1. All communications evaluate against the same baseline state
+2. Multiple triggers accumulate into a single notification with all relevant `communication_ids`
+3. Users get one consolidated alert instead of being spammed
+
+**Example:** Alert = "notify me when sentiment is negative"
+- 3 negative calls arrive within the 5 minute batch window
+- All 3 evaluate against the same state, all 3 trigger
+- They accumulate into one pending alert entry
+- User receives 1 notification referencing all 3 calls
+
+**If state updated immediately:** Call 1 triggers and sets `alerted=true`. Calls 2 and 3 see `alerted=true`, don't trigger, and the user only hears about 1 of the 3 negative calls.
+
 I threw together a toy solution to making dynamodb work here. It uses a GSI with a shard pk and then first_seen_at for the sort key. This should prevent hot partitions and allow for efficient time queries. 
 
 # Considerations
